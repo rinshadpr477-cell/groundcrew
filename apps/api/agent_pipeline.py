@@ -1,14 +1,15 @@
-"""End-to-end pipeline for one issue: router -> retrieval -> draft -> critique -> revise loop.
-Run against an issue already in our database, simulating a new issue coming in."""
+"""Core triage pipeline: router -> retrieval -> draft -> critique -> revise loop.
+Persists every run to Postgres. Runnable from the CLI, or imported by the API."""
 
 import json
 import sys
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from db import SessionLocal
 from llm_client import chat_json
-from models import Issue
+from models import Issue, TriageResult
 from retrieval import retrieve_similar_issues
 
 ROUTER_SYSTEM_PROMPT = """You are a fast triage classifier for GitHub issues on an open-source
@@ -47,7 +48,7 @@ Respond with ONLY a JSON object, no other text, matching this shape:
 MAX_REVISIONS = 2
 
 
-def run_pipeline(issue_number: int) -> None:
+def run_triage(issue_number: int, verbose: bool = True) -> dict:
     session = SessionLocal()
     try:
         issue = session.scalars(select(Issue).where(Issue.number == issue_number)).one_or_none()
@@ -55,20 +56,22 @@ def run_pipeline(issue_number: int) -> None:
         session.close()
 
     if issue is None:
-        print(f"Issue #{issue_number} not found in the local database.")
-        return
+        raise ValueError(f"Issue #{issue_number} not found in the local database.")
 
     issue_text = f"{issue.title}\n\n{issue.body or ''}"
-    print(f"=== New issue #{issue.number}: {issue.title} ===\n")
+    if verbose:
+        print(f"=== New issue #{issue.number}: {issue.title} ===\n")
 
     router_result = chat_json(ROUTER_SYSTEM_PROMPT, issue_text)
-    print(f"[Router] {router_result}\n")
+    if verbose:
+        print(f"[Router] {router_result}\n")
 
     similar = retrieve_similar_issues(issue_text, top_k=5, exclude_number=issue.number)
-    print("[Retrieved similar issues]")
-    for s in similar:
-        print(f"  #{s['number']} (score={s['score']:.3f}) {s['title']}")
-    print()
+    if verbose:
+        print("[Retrieved similar issues]")
+        for s in similar:
+            print(f"  #{s['number']} (score={s['score']:.3f}) {s['title']}")
+        print()
 
     similar_numbers = [s["number"] for s in similar]
     lookup_session = SessionLocal()
@@ -86,10 +89,12 @@ def run_pipeline(issue_number: int) -> None:
     )
 
     revision_notes = None
-    draft = {}
-    critique = {}
+    draft: dict = {}
+    critique: dict = {}
+    attempts = 0
 
     for attempt in range(1, MAX_REVISIONS + 2):
+        attempts = attempt
         if revision_notes is None:
             draft_input = f"NEW ISSUE:\n{issue_text}\n\nSIMILAR PAST ISSUES:\n{similar_context}"
         else:
@@ -100,22 +105,61 @@ def run_pipeline(issue_number: int) -> None:
             )
 
         draft = chat_json(DRAFT_SYSTEM_PROMPT, draft_input)
-        print(f"[Draft attempt {attempt}] {json.dumps(draft, indent=2)}\n")
+        if verbose:
+            print(f"[Draft attempt {attempt}] {json.dumps(draft, indent=2)}\n")
 
         critic_input = f"DRAFT REPLY:\n{draft['suggested_reply']}\n\nALLOWED SOURCES:\n{similar_context}"
         critique = chat_json(CRITIC_SYSTEM_PROMPT, critic_input)
-        print(f"[Critic attempt {attempt}] {critique}\n")
+        if verbose:
+            print(f"[Critic attempt {attempt}] {critique}\n")
 
         if critique.get("approved"):
             break
         revision_notes = critique.get("problems", [])
 
-    if critique.get("approved"):
-        print("=== Verdict: APPROVED — ready for human review ===")
-    else:
-        print("=== Verdict: STILL FLAGGED after revisions — routed to human review with critic's concerns attached ===")
+    status = "approved" if critique.get("approved") else "needs_review"
+
+    result = TriageResult(
+        repo=issue.repo,
+        issue_number=issue.number,
+        issue_title=issue.title,
+        category=router_result.get("category", "other"),
+        router_confidence=float(router_result.get("confidence", 0.0)),
+        similar_issue_numbers=similar_numbers,
+        attempts=attempts,
+        suggested_reply=draft.get("suggested_reply", ""),
+        cited_issue_numbers=draft.get("cited_issue_numbers", []),
+        critic_approved=bool(critique.get("approved", False)),
+        critic_problems=critique.get("problems", []),
+        critic_confidence=float(critique.get("confidence", 0.0)),
+        status=status,
+          created_at=datetime.now(timezone.utc),
+    )
+
+    save_session = SessionLocal()
+    try:
+        save_session.add(result)
+        save_session.commit()
+        save_session.refresh(result)
+        result_id = result.id
+    finally:
+        save_session.close()
+
+    if verbose:
+        verdict = "APPROVED" if status == "approved" else "STILL FLAGGED after revisions"
+        print(f"=== Verdict: {verdict} — saved as triage_results.id={result_id} ===")
+
+    return {
+        "id": result_id,
+        "issue_number": issue.number,
+        "status": status,
+        "category": router_result.get("category"),
+        "suggested_reply": draft.get("suggested_reply"),
+        "critic_problems": critique.get("problems", []),
+        "attempts": attempts,
+    }
 
 
 if __name__ == "__main__":
     issue_number = int(sys.argv[1]) if len(sys.argv) > 1 else 2888
-    run_pipeline(issue_number)
+    run_triage(issue_number)

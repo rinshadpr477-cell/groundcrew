@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -23,4 +23,25 @@ class Issue(Base):
     github_created_at: Mapped[datetime] = mapped_column(DateTime)
     github_closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     raw_json: Mapped[dict] = mapped_column(JSON)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class TriageResult(Base):
+    __tablename__ = "triage_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo: Mapped[str] = mapped_column(String(200), index=True)
+    issue_number: Mapped[int] = mapped_column(Integer, index=True)
+    issue_title: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(50))
+    router_confidence: Mapped[float] = mapped_column(Float)
+    similar_issue_numbers: Mapped[list] = mapped_column(JSON, default=list)
+    attempts: Mapped[int] = mapped_column(Integer)
+    suggested_reply: Mapped[str] = mapped_column(Text)
+    cited_issue_numbers: Mapped[list] = mapped_column(JSON, default=list)
+    critic_approved: Mapped[bool] = mapped_column(Boolean)
+    critic_problems: Mapped[list] = mapped_column(JSON, default=list)
+    critic_confidence: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), index=True)  # "approved" | "needs_review"
+    human_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)  # null | "approved" | "rejected"
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
