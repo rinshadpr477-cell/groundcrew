@@ -99,6 +99,7 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
     critique: dict = {}
     attempts = 0
     attempt_timings = []
+    pipeline_error: str | None = None
 
     for attempt in range(1, MAX_REVISIONS + 2):
         attempts = attempt
@@ -112,14 +113,26 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
             )
 
         draft_start = time.perf_counter()
-        draft = chat_json(DRAFT_SYSTEM_PROMPT, draft_input)
+        try:
+            draft = chat_json(DRAFT_SYSTEM_PROMPT, draft_input)
+        except ValueError as exc:
+            pipeline_error = f"Draft agent failed to return valid JSON after retries: {exc}"
+            if verbose:
+                print(f"[Draft attempt {attempt}] FAILED — {pipeline_error}\n")
+            break
         draft_seconds = time.perf_counter() - draft_start
         if verbose:
             print(f"[Draft attempt {attempt}] {json.dumps(draft, indent=2)} ({draft_seconds:.1f}s)\n")
 
-        critic_input = f"DRAFT REPLY:\n{draft['suggested_reply']}\n\nALLOWED SOURCES:\n{similar_context}"
+        critic_input = f"DRAFT REPLY:\n{draft.get('suggested_reply', '')}\n\nALLOWED SOURCES:\n{similar_context}"
         critic_start = time.perf_counter()
-        critique = chat_json(CRITIC_SYSTEM_PROMPT, critic_input)
+        try:
+            critique = chat_json(CRITIC_SYSTEM_PROMPT, critic_input)
+        except ValueError as exc:
+            pipeline_error = f"Critic agent failed to return valid JSON after retries: {exc}"
+            if verbose:
+                print(f"[Critic attempt {attempt}] FAILED — {pipeline_error}\n")
+            break
         critic_seconds = time.perf_counter() - critic_start
         if verbose:
             print(f"[Critic attempt {attempt}] {critique} ({critic_seconds:.1f}s)\n")
@@ -134,7 +147,12 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
             break
         revision_notes = critique.get("problems", [])
 
-    status = "approved" if critique.get("approved") else "needs_review"
+    if pipeline_error:
+        status = "needs_review"
+        critique = {"approved": False, "problems": [pipeline_error], "confidence": 0.0}
+    else:
+        status = "approved" if critique.get("approved") else "needs_review"
+
     total_seconds = time.perf_counter() - pipeline_start
 
     timings = {

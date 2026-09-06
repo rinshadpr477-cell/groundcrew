@@ -12,6 +12,7 @@ load_dotenv()
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "huggingface").lower()  # "huggingface" | "ollama"
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 5
+MAX_JSON_RETRIES = 2  # extra attempts if the model returns unparsable/truncated JSON
 
 if LLM_PROVIDER == "huggingface":
     HF_TOKEN = os.getenv("HF_TOKEN")
@@ -64,7 +65,7 @@ def _call_ollama(system_prompt: str, user_prompt: str, model: str) -> str:
                     ],
                     "format": "json",
                     "stream": False,
-                    "options": {"temperature": 0.2},
+                    "options": {"temperature": 0.2, "num_predict": 1024},
                 },
                 timeout=120,
             )
@@ -93,13 +94,19 @@ def _call_model(system_prompt: str, user_prompt: str, model: str) -> str:
 
 
 def chat_json(system_prompt: str, user_prompt: str, model: str | None = None) -> dict:
-    content = _call_model(system_prompt, user_prompt, model or _DEFAULT_MODEL)
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
-        cleaned = cleaned.rsplit("```", 1)[0] if "```" in cleaned else cleaned
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Model did not return valid JSON:\n{content}") from exc
+    target_model = model or _DEFAULT_MODEL
+    last_error = None
+    content = ""
+    for attempt in range(1, MAX_JSON_RETRIES + 2):
+        content = _call_model(system_prompt, user_prompt, target_model)
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+            cleaned = cleaned.rsplit("```", 1)[0] if "```" in cleaned else cleaned
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            print(f"  (Model returned invalid/truncated JSON, retrying — attempt {attempt}/{MAX_JSON_RETRIES + 1})")
+    raise ValueError(f"Model did not return valid JSON after {MAX_JSON_RETRIES + 1} attempts:\n{content}") from last_error
