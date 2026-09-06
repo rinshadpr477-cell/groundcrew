@@ -2,6 +2,8 @@
 
 Groundcrew is an autonomous triage system for GitHub issue trackers, built and evaluated against 5,300+ real issues from [colinhacks/zod](https://github.com/colinhacks/zod), a popular open-source TypeScript library.
 
+[![Eval Gate](https://github.com/rinshadpr477-cell/groundcrew/actions/workflows/eval.yml/badge.svg)](https://github.com/rinshadpr477-cell/groundcrew/actions/workflows/eval.yml)
+
 Given a new issue, it classifies it, retrieves the most relevant past issues using semantic search, drafts a helpful first reply grounded only in those retrieved issues, and runs that draft through a second "critic" agent that checks for fabricated or unsupported claims before anything reaches a human. Anything the critic can't verify — even after revision attempts — is routed to a human review queue instead of being shipped automatically.
 
 It's built to demonstrate production RAG and multi-agent patterns end to end: real data, a verification step that actually catches hallucinations, an honest evaluation harness, and basic LLMOps (latency tracing, pluggable model backends, load testing) — not a toy demo.
@@ -46,6 +48,10 @@ These numbers all come from actually running the system against real GitHub data
 | API load test (`/triage/queue`) | 15.4 req/s, p95 ≈ 1.98s, 0 errors | 20 concurrent users, 200 requests |
 
 One issue (#6455) needed all 3 attempts and was still correctly escalated to human review rather than being auto-approved — a concrete example of the system refusing to ship something it couldn't verify.
+
+## Continuous evaluation
+
+Every push to `main` runs a GitHub Actions workflow that spins up Postgres and Qdrant, loads a 500-issue golden set (a real, checked-in sample of historically closed issues, biased toward labeled ones for evaluability), re-indexes it, and re-runs the retrieval-relevance metric — failing the build if it drops below a baseline (currently 0.82 on this set). This golden-set score isn't directly comparable to the 0.29 measured above, since it's a smaller, more label-dense subset — it's a regression check against a fixed reference point, not a restatement of the headline metric. The LLM-dependent metrics (router accuracy, pipeline approval rate) are deliberately excluded from CI, since gating every single commit on a paid API call or a locally-installed model isn't a sensible cost/time trade-off; those stay manual, run periodically via `python run_eval.py`.
 
 ## Known limitations
 

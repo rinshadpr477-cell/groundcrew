@@ -13,8 +13,7 @@ import sys
 
 from run_eval import eval_retrieval_relevance
 
-BASELINE_THRESHOLD = 0.15  # placeholder — recalibrate after seeing the first real CI run
-
+BASELINE_THRESHOLD = 0.65  # measured baseline on the golden set: 0.82 (2026-09); some margin for normal noise
 
 def main() -> None:
     result = eval_retrieval_relevance(sample_size=100)
