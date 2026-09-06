@@ -44,6 +44,7 @@ class TriageResult(Base):
     critic_confidence: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(20), index=True)
     human_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    timings: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 

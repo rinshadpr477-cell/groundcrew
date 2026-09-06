@@ -1,8 +1,10 @@
 """Core triage pipeline: router -> retrieval -> draft -> critique -> revise loop.
-Persists every run to Postgres. Runnable from the CLI, or imported by the API."""
+Persists every run to Postgres, including a per-stage timing breakdown for observability.
+Runnable from the CLI, or imported by the API."""
 
 import json
 import sys
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -49,6 +51,8 @@ MAX_REVISIONS = 2
 
 
 def run_triage(issue_number: int, verbose: bool = True) -> dict:
+    pipeline_start = time.perf_counter()
+
     session = SessionLocal()
     try:
         issue = session.scalars(select(Issue).where(Issue.number == issue_number)).one_or_none()
@@ -62,17 +66,14 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
     if verbose:
         print(f"=== New issue #{issue.number}: {issue.title} ===\n")
 
+    router_start = time.perf_counter()
     router_result = chat_json(ROUTER_SYSTEM_PROMPT, issue_text)
+    router_seconds = time.perf_counter() - router_start
     if verbose:
-        print(f"[Router] {router_result}\n")
+        print(f"[Router] {router_result} ({router_seconds:.1f}s)\n")
 
+    retrieval_start = time.perf_counter()
     similar = retrieve_similar_issues(issue_text, top_k=5, exclude_number=issue.number)
-    if verbose:
-        print("[Retrieved similar issues]")
-        for s in similar:
-            print(f"  #{s['number']} (score={s['score']:.3f}) {s['title']}")
-        print()
-
     similar_numbers = [s["number"] for s in similar]
     lookup_session = SessionLocal()
     try:
@@ -82,16 +83,22 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
     finally:
         lookup_session.close()
     body_by_number = {i.number: (i.body or "") for i in similar_full}
-
     similar_context = "\n\n".join(
         f"#{s['number']}: {s['title']}\n{body_by_number.get(s['number'], '')[:500]}"
         for s in similar
     )
+    retrieval_seconds = time.perf_counter() - retrieval_start
+    if verbose:
+        print("[Retrieved similar issues]")
+        for s in similar:
+            print(f"  #{s['number']} (score={s['score']:.3f}) {s['title']}")
+        print(f"  ({retrieval_seconds:.1f}s)\n")
 
     revision_notes = None
     draft: dict = {}
     critique: dict = {}
     attempts = 0
+    attempt_timings = []
 
     for attempt in range(1, MAX_REVISIONS + 2):
         attempts = attempt
@@ -104,20 +111,38 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
                 + "\n".join(f"- {p}" for p in revision_notes)
             )
 
+        draft_start = time.perf_counter()
         draft = chat_json(DRAFT_SYSTEM_PROMPT, draft_input)
+        draft_seconds = time.perf_counter() - draft_start
         if verbose:
-            print(f"[Draft attempt {attempt}] {json.dumps(draft, indent=2)}\n")
+            print(f"[Draft attempt {attempt}] {json.dumps(draft, indent=2)} ({draft_seconds:.1f}s)\n")
 
         critic_input = f"DRAFT REPLY:\n{draft['suggested_reply']}\n\nALLOWED SOURCES:\n{similar_context}"
+        critic_start = time.perf_counter()
         critique = chat_json(CRITIC_SYSTEM_PROMPT, critic_input)
+        critic_seconds = time.perf_counter() - critic_start
         if verbose:
-            print(f"[Critic attempt {attempt}] {critique}\n")
+            print(f"[Critic attempt {attempt}] {critique} ({critic_seconds:.1f}s)\n")
+
+        attempt_timings.append({
+            "attempt": attempt,
+            "draft_seconds": round(draft_seconds, 2),
+            "critic_seconds": round(critic_seconds, 2),
+        })
 
         if critique.get("approved"):
             break
         revision_notes = critique.get("problems", [])
 
     status = "approved" if critique.get("approved") else "needs_review"
+    total_seconds = time.perf_counter() - pipeline_start
+
+    timings = {
+        "router_seconds": round(router_seconds, 2),
+        "retrieval_seconds": round(retrieval_seconds, 2),
+        "attempts": attempt_timings,
+        "total_seconds": round(total_seconds, 2),
+    }
 
     result = TriageResult(
         repo=issue.repo,
@@ -133,7 +158,8 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
         critic_problems=critique.get("problems", []),
         critic_confidence=float(critique.get("confidence", 0.0)),
         status=status,
-          created_at=datetime.now(timezone.utc),
+        timings=timings,
+        created_at=datetime.now(timezone.utc),
     )
 
     save_session = SessionLocal()
@@ -147,7 +173,7 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
 
     if verbose:
         verdict = "APPROVED" if status == "approved" else "STILL FLAGGED after revisions"
-        print(f"=== Verdict: {verdict} — saved as triage_results.id={result_id} ===")
+        print(f"=== Verdict: {verdict} — saved as triage_results.id={result_id} ({total_seconds:.1f}s total) ===")
 
     return {
         "id": result_id,
@@ -157,6 +183,7 @@ def run_triage(issue_number: int, verbose: bool = True) -> dict:
         "suggested_reply": draft.get("suggested_reply"),
         "critic_problems": critique.get("problems", []),
         "attempts": attempts,
+        "timings": timings,
     }
 
 

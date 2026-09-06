@@ -55,6 +55,7 @@ def _serialize(result: TriageResult) -> dict:
         "critic_confidence": result.critic_confidence,
         "status": result.status,
         "human_decision": result.human_decision,
+        "timings": result.timings,
         "created_at": result.created_at.isoformat() if result.created_at else None,
     }
 
