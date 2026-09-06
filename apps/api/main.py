@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from agent_pipeline import run_triage
 from db import SessionLocal
-from models import TriageResult
+from models import EvalRun, TriageResult
 
 load_dotenv()
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -60,6 +60,21 @@ def _serialize(result: TriageResult) -> dict:
     }
 
 
+def _serialize_eval(run: EvalRun) -> dict:
+    return {
+        "id": run.id,
+        "repo": run.repo,
+        "llm_model": run.llm_model,
+        "retrieval_relevance_at_5": run.retrieval_relevance_at_5,
+        "category_accuracy": run.category_accuracy,
+        "approval_rate": run.approval_rate,
+        "avg_attempts": run.avg_attempts,
+        "avg_latency_seconds": run.avg_latency_seconds,
+        "pipeline_eval_count": run.pipeline_eval_count,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -103,3 +118,12 @@ def record_decision(result_id: int, payload: DecisionRequest) -> dict:
         session.commit()
         session.refresh(result)
         return _serialize(result)
+
+
+@app.get("/eval/latest")
+def get_latest_eval() -> dict | None:
+    with SessionLocal() as session:
+        run = session.execute(
+            select(EvalRun).order_by(EvalRun.created_at.desc()).limit(1)
+        ).scalars().first()
+        return _serialize_eval(run) if run else None
