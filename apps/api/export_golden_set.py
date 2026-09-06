@@ -21,14 +21,24 @@ def run() -> None:
             select(Issue)
             .where(Issue.is_pull_request.is_(False), Issue.state == "closed")
             .order_by(Issue.number.desc())
-            .limit(SAMPLE_SIZE)
         ).all()
-        records = [{"repo": issue.repo, "raw": issue.raw_json} for issue in issues]
+
+    labeled = [i for i in issues if i.labels]
+    unlabeled = [i for i in issues if not i.labels]
+
+    # Prioritize labeled issues — that's what the retrieval-relevance eval actually needs —
+    # then pad with unlabeled ones so the corpus is still large enough for meaningful search.
+    selected = labeled[:SAMPLE_SIZE]
+    remaining_slots = SAMPLE_SIZE - len(selected)
+    if remaining_slots > 0:
+        selected += unlabeled[:remaining_slots]
+
+    records = [{"repo": issue.repo, "raw": issue.raw_json} for issue in selected]
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump(records, f)
 
-    print(f"Exported {len(records)} issues to {OUTPUT_PATH}")
+    print(f"Exported {len(records)} issues ({len(labeled[:SAMPLE_SIZE])} labeled) to {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":
