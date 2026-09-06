@@ -12,7 +12,6 @@ from db import SessionLocal
 from models import TriageResult
 
 load_dotenv()
-
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
 
@@ -22,7 +21,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Groundcrew API", version="0.1.0", lifespan=lifespan)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -57,69 +55,50 @@ def _serialize(result: TriageResult) -> dict:
         "critic_confidence": result.critic_confidence,
         "status": result.status,
         "human_decision": result.human_decision,
-        "created_at": result.created_at.isoformat(),
+        "created_at": result.created_at.isoformat() if result.created_at else None,
     }
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict:
     return {"status": "ok"}
 
 
 @app.post("/triage/run", status_code=201)
 def run_triage_endpoint(payload: RunTriageRequest) -> dict:
     try:
-        summary = run_triage(payload.issue_number, verbose=False)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    session = SessionLocal()
-    try:
-        result = session.get(TriageResult, summary["id"])
-        return _serialize(result)
-    finally:
-        session.close()
+        return run_triage(payload.issue_number, verbose=False)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/triage/queue")
 def get_triage_queue() -> list[dict]:
-    session = SessionLocal()
-    try:
-        results = session.scalars(
-            select(TriageResult)
-            .where(TriageResult.status == "needs_review")
-            .order_by(TriageResult.created_at.desc())
-        ).all()
+    with SessionLocal() as session:
+        results = session.execute(
+            select(TriageResult).order_by(TriageResult.created_at.desc())
+        ).scalars().all()
         return [_serialize(r) for r in results]
-    finally:
-        session.close()
 
 
 @app.get("/triage/{result_id}")
 def get_triage_result(result_id: int) -> dict:
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         result = session.get(TriageResult, result_id)
         if result is None:
-            raise HTTPException(status_code=404, detail=f"Triage result {result_id} not found")
+            raise HTTPException(status_code=404, detail="Triage result not found")
         return _serialize(result)
-    finally:
-        session.close()
 
 
 @app.post("/triage/{result_id}/decision")
 def record_decision(result_id: int, payload: DecisionRequest) -> dict:
     if payload.decision not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="decision must be 'approved' or 'rejected'")
-
-    session = SessionLocal()
-    try:
+    with SessionLocal() as session:
         result = session.get(TriageResult, result_id)
         if result is None:
-            raise HTTPException(status_code=404, detail=f"Triage result {result_id} not found")
+            raise HTTPException(status_code=404, detail="Triage result not found")
         result.human_decision = payload.decision
         session.commit()
         session.refresh(result)
         return _serialize(result)
-    finally:
-        session.close()

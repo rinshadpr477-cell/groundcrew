@@ -42,6 +42,24 @@ class TriageResult(Base):
     critic_approved: Mapped[bool] = mapped_column(Boolean)
     critic_problems: Mapped[list] = mapped_column(JSON, default=list)
     critic_confidence: Mapped[float] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(20), index=True)  # "approved" | "needs_review"
-    human_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)  # null | "approved" | "rejected"
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    human_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class EvalRun(Base):
+    __tablename__ = "eval_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo: Mapped[str] = mapped_column(String(200), index=True)
+    llm_model: Mapped[str] = mapped_column(String(200))
+    retrieval_relevance_at_5: Mapped[float | None] = mapped_column(Float, nullable=True)
+    retrieval_eval_count: Mapped[int] = mapped_column(Integer, default=0)
+    category_accuracy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    category_eval_count: Mapped[int] = mapped_column(Integer, default=0)
+    approval_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_attempts: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_latency_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pipeline_eval_count: Mapped[int] = mapped_column(Integer, default=0)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
